@@ -1,27 +1,32 @@
+# -*- coding: utf-8 -*-
 import hashlib
 import json
 from time import time
 from urllib.parse import urlparse
 from uuid import uuid4
-
+import merkletree
 import requests
 from flask import Flask, jsonify, request
+# To do:
+# 用脚本的话，挖到矿时，应该直接更新区块链而不是手动更新
+# Merkel tree
 
 
 class Blockchain:
     def __init__(self):
-        self.current_transactions = []     #
+        self.current_transactions = []  #
         self.chain = []
         self.nodes = set()
         self.memory_pool = []
+        self.merkle_root = ''
         # Create the genesis block
         self.new_block(previous_hash='1', proof=100)
 
     def register_node(self, address):
         """
-        Add a new node to the list of nodes
+        加入新节点
 
-        :param address: Address of node. Eg. 'http://192.168.0.5:5000'
+        :param address: 节点的地址. Eg. 'http://192.168.0.5:5000'
         """
 
         parsed_url = urlparse(address)
@@ -35,10 +40,10 @@ class Blockchain:
 
     def valid_chain(self, chain):
         """
-        Determine if a given blockchain is valid
+        通过验证每个区块的proof，判断给予的区块链是否有效
 
-        :param chain: A blockchain
-        :return: True if valid, False if not
+        :param chain: 某个区块链
+        :return: 有效返回True，否则False
         """
 
         last_block = chain[0]
@@ -64,10 +69,9 @@ class Blockchain:
 
     def resolve_conflicts(self):
         """
-        This is our consensus algorithm, it resolves conflicts
-        by replacing our chain with the longest one in the network.
+        共识机制：通过相信最长链解决冲突
 
-        :return: True if our chain was replaced, False if not
+        :return: 若被替换则为True，否则为False
         """
 
         neighbours = self.nodes
@@ -96,24 +100,28 @@ class Blockchain:
 
         return False
 
-    def new_small_block(self):
-        small_block = {
+    #
+    def new_child_block(self):
+
+        child_block = {
             # 'miner': ,
             'pool': self.memory_pool,
         }
         self.memory_pool = []
-        # self.chain.append(small_block)
-        return small_block
+        # self.chain.append(child_block)
+        return child_block
 
     def new_block(self, proof, previous_hash):
         """
         Create a new Block in the Blockchain
 
-        :param proof: The proof given by the Proof of Work algorithm
-        :param previous_hash: Hash of previous Block
-        :small_block : miner has the right to create one more block without proof(a normal one and a small one )
+        :param proof: The proof given by the Proof of Work algorithm  用于工作证明的解
+        :param previous_hash: Hash of previous Block                  前一块的hash
         :return: New Block
         """
+        # 更新merkle_root
+        self.get_merkle_root()
+
         block = {
             'index': len(self.chain) + 1,
             'timestamp': time(),
@@ -121,20 +129,27 @@ class Blockchain:
             'proof': proof,
             'previous_hash': previous_hash or self.hash(self.chain[-1]),
             'pool': self.memory_pool,
+            'merkle_root': self.merkle_root,
         }
         # Reset the current list of transactions
         self.current_transactions = []
         self.chain.append(block)
         return block
 
+    def get_merkle_root(self):
+        tree = merkletree.MerkleTree()
+        tree.list_of_transaction = str(self.current_transactions)
+        print(tree.create_tree())
+        self.merkle_root = tree.create_tree()
+
     def new_transaction(self, sender, recipient, amount):
         """
-        Creates a new transaction to go into the next mined Block
+        创建一个置于下个区块的交易
 
-        :param sender: Address of the Sender
-        :param recipient: Address of the Recipient
-        :param amount: Amount
-        :return: The index of the Block that will hold this transaction
+        :param sender: 发送者的地址
+        :param recipient: 接收者的地址
+        :param amount: 交易的硬币数量
+        :return: 返回会承载这个交易的区块索引
         """
         if sender == '0':
             self.current_transactions.append({
@@ -142,21 +157,19 @@ class Blockchain:
                 'recipient': recipient,
                 'amount': amount,
             })
-        elif len(self.current_transactions) <= 2:
+        elif len(self.current_transactions) <= 10:
             self.current_transactions.append({
                 'sender': sender,
                 'recipient': recipient,
                 'amount': amount,
             })
             print('length of current_transactions: ' + str(len(self.current_transactions)))
-#            return self.last_block['index'] + 1
         else:
             self.memory_pool.append({
                 'sender': sender,
                 'recipient': recipient,
                 'amount': amount,
             })
-#            return self.last_block['index']
 
     @property
     def last_block(self):
@@ -165,9 +178,9 @@ class Blockchain:
     @staticmethod
     def hash(block):
         """
-        Creates a SHA-256 hash of a Block
+        计算区块的SHA256值
 
-        :param block: Block
+        :param block: 区块
         """
 
         # We must make sure that the Dictionary is Ordered, or we'll have inconsistent hashes
@@ -176,13 +189,13 @@ class Blockchain:
 
     def proof_of_work(self, last_block):
         """
-        Simple Proof of Work Algorithm:
+        基于工作量证明的算法
 
-         - Find a number p' such that hash(pp') contains leading 4 zeroes
-         - Where p is the previous proof, and p' is the new proof
-         
-        :param last_block: <dict> last Block
-        :return: <int>
+         1. 找到一个数字p' 使得 hash(pp') 以四位零开头
+         2. p是前一个proof，p'是新的proof
+
+        :param last_block: <dict> 前一个区块
+        :return: <int> 当前proof
         """
 
         last_proof = last_block['proof']
@@ -197,45 +210,45 @@ class Blockchain:
     @staticmethod
     def valid_proof(last_proof, proof, last_hash):
         """
-        Validates the Proof
+        验证 Proof
 
-        :param last_proof: <int> Previous Proof
-        :param proof: <int> Current Proof
-        :param last_hash: <str> The hash of the Previous Block
-        :return: <bool> True if correct, False if not.
+        :param last_proof: <int> 前一个proof
+        :param proof: <int> 当前 Proof
+        :param last_hash: <str> 前一块的hash
+        :return: <bool> 正确为True，错误为False
 
         """
 
         guess = f'{last_proof}{proof}{last_hash}'.encode()
         guess_hash = hashlib.sha256(guess).hexdigest()
-        return guess_hash[:4] == "0000"
+        return guess_hash[:5] == "00000"
 
 
-# Instantiate the Node
+# 节点实例化
 app = Flask(__name__)
 
-# Generate a globally unique address for this node
+# 给节点生成一个独一无二的地址
 node_identifier = str(uuid4()).replace('-', '')
 
-# Instantiate the Blockchain
+# 区块链实例化
 blockchain = Blockchain()
 
 
 @app.route('/mine', methods=['GET'])
 def mine():
-    # We run the proof of work algorithm to get the next proof...
+    # 使用工作量证明机制得到解
     last_block = blockchain.last_block
     proof = blockchain.proof_of_work(last_block)
 
-    # We must receive a reward for finding the proof.
-    # The sender is "0" to signify that this node has mined a new coin.
+    # 找到解得有奖励
+    # 发送者为“0”来标识这个交易为创币交易
     blockchain.new_transaction(
         sender="0",
         recipient=node_identifier,
         amount=50,
     )
 
-    # Forge the new Block by adding it to the chain
+    # 把新块连到区块链中
     previous_hash = blockchain.hash(last_block)
     block = blockchain.new_block(proof, previous_hash)
     # 找到块之后，
@@ -248,14 +261,14 @@ def mine():
     }
     if len(blockchain.memory_pool) == 0:
         return jsonify(response), 200
-    small_block = blockchain.new_small_block()
+    child_block = blockchain.new_child_block()
     response = {
-        '1_index': block['index'],
-        '2_message': "New Block Forged",
-        '3_proof': block['proof'],
-        '4_previous_hash': block['previous_hash'],
-        '5_transactions': block['transactions'],
-        '6_small_block': small_block['pool'],
+        'index': block['index'],
+        'message': "New Block Forged",
+        'proof': block['proof'],
+        'previous_hash': block['previous_hash'],
+        'transactions': block['transactions'],
+        'child_block': child_block['pool'],
     }
     return jsonify(response), 200
 
@@ -264,12 +277,12 @@ def mine():
 def new_transaction():
     values = request.get_json()
 
-    # Check that the required fields are in the POST'ed data
+    # 检查发送过来的json数据
     required = ['sender', 'recipient', 'amount']
     if not all(k in values for k in required):
         return 'Missing values', 400
 
-    # Create a new Transaction
+    # 创建一笔新的交易
     # index = blockchain.new_transaction(values['sender'], values['recipient'], values['amount'])
     blockchain.new_transaction(values['sender'], values['recipient'], values['amount'])
     if len(blockchain.memory_pool) == 0:
@@ -337,8 +350,8 @@ if __name__ == '__main__':
     from argparse import ArgumentParser
 
     parser = ArgumentParser()
-    parser.add_argument('-p', '--port', default=5000, type=int, help='port to listen on')
+    parser.add_argument('-p', '--port', default=8000, type=int, help='port to listen on')
     args = parser.parse_args()
     port = args.port
 
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='127.0.0.1', port=port)
